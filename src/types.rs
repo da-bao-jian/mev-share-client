@@ -1,6 +1,76 @@
-use ethers::types::{Address, Bytes, TxHash, H256, U256, U64};
+use ethers::types::{Address, Chain, Bytes, TxHash, H256, U256, U64};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{array::TryFromSliceError, fmt::LowerHex, ops::Deref};
+use std::{collections::HashMap, array::TryFromSliceError, fmt::LowerHex, ops::Deref};
+
+
+/// Network configuration for the supported networks
+pub struct SupportedNetworks<'a> {
+    /// The supported networks
+    supported_networks: HashMap<String, MatchMakerNetwork<'a>>,
+}
+
+impl<'a> SupportedNetworks<'a> {
+    pub fn new() -> Self {
+        let mut networks = HashMap::new();
+        networks.insert(
+            "mainnet".to_string(),
+            MatchMakerNetwork {
+                name: "mainnet",
+                chain_id: Chain::Mainnet.into(),
+                stream_url: "https://mev-share.flashbots.net",
+                api_url: "https://relay.flashbots.net",
+            },
+        );
+        networks.insert(
+            "goerli".to_string(),
+            MatchMakerNetwork {
+                name: "goerli",
+                chain_id: Chain::Goerli.into(),
+                stream_url: "https://mev-share-goerli.flashbots.net",
+                api_url: "https://relay-goerli.flashbots.net",
+            },
+        );
+
+        SupportedNetworks {
+            supported_networks: networks,
+        }
+    }
+
+    pub fn mainnet(&self) -> Option<&MatchMakerNetwork> {
+        self.supported_networks.get("mainnet")
+    }
+
+    pub fn goerli(&self) -> Option<&MatchMakerNetwork> {
+        self.supported_networks.get("goerli")
+    }
+
+    pub fn is_supported(&self, chain_id: u64) -> bool {
+        self.supported_networks
+            .values()
+            .any(|network| network.chain_id == chain_id)
+    }
+
+    pub fn get_network(&self, chain: u64) -> Option<MatchMakerNetwork<'a>> {
+        self.supported_networks
+            .values()
+            .find(|network| network.chain_id == chain)
+            .cloned()
+    }
+}
+
+/// Configuration used to connect to the Matchmaker
+#[derive(Deserialize, Debug, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchMakerNetwork<'a> {
+	/// Chain ID of network
+	pub chain_id: u64,
+	/// Lowercase name of network. e.g. "mainnet"
+	pub name: &'a str,
+	/// The URL of the Matchmaker API
+	pub stream_url: &'a str,
+	/// Matchmaker bundle & transaction API URL
+	pub api_url: &'a str,
+}
 
 /// Smart bundle spec version
 #[derive(Deserialize, Debug, Serialize, Clone, Default)]
