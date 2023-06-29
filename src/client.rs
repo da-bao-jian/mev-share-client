@@ -114,7 +114,7 @@ where
     /// Registers the provided callback to be called when a new MEV-Share bundle is received.
     ///
     /// * `event` - The event received from the event stream.
-    /// * `callback` - Async function to process pending tx.
+    /// * `callback` - Async function to process pending bundle.
     fn on_bundle<F>(&self, event: &Event, callback: F)
     where
         F: FnOnce(PendingTxOrBundle),
