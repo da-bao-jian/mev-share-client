@@ -1,9 +1,18 @@
-use ethers::types::{Address, Chain, Bytes, TxHash, H256, U256, U64};
+use ethers::types::{Address, Bytes, Chain, TxHash, H256, U256, U64};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{collections::HashMap, array::TryFromSliceError, fmt::LowerHex, ops::Deref};
-
+use std::{array::TryFromSliceError, collections::HashMap, fmt::LowerHex, ops::Deref};
+use mev_share_rs::{
+    sse::{
+        Event,
+        EventTransactionLog,
+        EventTransaction,
+        FunctionSelector
+    },
+    
+};
 
 /// Network configuration for the supported networks
+#[derive(Debug, Clone)]
 pub struct SupportedNetworks<'a> {
     /// The supported networks
     supported_networks: HashMap<String, MatchMakerNetwork<'a>>,
@@ -62,14 +71,29 @@ impl<'a> SupportedNetworks<'a> {
 #[derive(Deserialize, Debug, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchMakerNetwork<'a> {
-	/// Chain ID of network
-	pub chain_id: u64,
-	/// Lowercase name of network. e.g. "mainnet"
-	pub name: &'a str,
-	/// The URL of the Matchmaker API
-	pub stream_url: &'a str,
-	/// Matchmaker bundle & transaction API URL
-	pub api_url: &'a str,
+    /// Chain ID of network
+    pub chain_id: u64,
+    /// Lowercase name of network. e.g. "mainnet"
+    pub name: &'a str,
+    /// The URL of the Matchmaker API
+    pub stream_url: &'a str,
+    /// Matchmaker bundle & transaction API URL
+    pub api_url: &'a str,
+}
+
+/// Used to specify which type of event to listen for
+pub enum StreamingEventTypes {
+    Bundle,
+    Transaction,
+}
+
+impl StreamingEventTypes {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StreamingEventTypes::Bundle => "bundle",
+            StreamingEventTypes::Transaction => "transaction",
+        }
+    }
 }
 
 /// Smart bundle spec version
@@ -222,267 +246,134 @@ pub struct HintPreference {
     tx_hash: Option<bool>,
 }
 
-//////////////////////// Event History Types ////////////////////////
-
-/// Data about the event history endpoint
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(missing_docs)]
-pub struct EventHistoryInfo {
-    pub count: u64,
-    pub min_block: u64,
-    pub max_block: u64,
-    pub min_timestamp: u64,
-    pub max_timestamp: u64,
-    pub max_limit: u64,
-}
-
-/// SSE event of the `history` endpoint
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EventHistory {
-    /// The block number of the event's block.
-    pub block: u64,
-    /// The timestamp when the event was emitted.
-    pub timestamp: u64,
-    /// Hint for the historic block.
-    pub hint: Hint,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(missing_docs)]
-pub struct Hint {
-    #[serde(with = "null_sequence")]
-    pub txs: Vec<EventTransaction>,
-    pub hash: H256,
-    #[serde(with = "null_sequence")]
-    pub logs: Vec<EventTransactionLog>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gas_used: Option<U256>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mev_gas_price: Option<U256>,
-}
-
-/// Query params for the `history` endpoint
-#[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-#[allow(missing_docs)]
-pub struct EventHistoryParams {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub block_start: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub block_end: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp_start: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp_end: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub offset: Option<u64>,
-}
-
-#[allow(missing_docs)]
-impl EventHistoryParams {
-    pub fn with_block_start(mut self, block_start: u64) -> Self {
-        self.block_start = Some(block_start);
-        self
-    }
-
-    pub fn with_block_end(mut self, block_end: u64) -> Self {
-        self.block_end = Some(block_end);
-        self
-    }
-
-    pub fn with_block_range(mut self, block_start: u64, block_end: u64) -> Self {
-        self.block_start = Some(block_start);
-        self.block_end = Some(block_end);
-        self
-    }
-
-    pub fn with_timestamp_start(mut self, timestamp_start: u64) -> Self {
-        self.timestamp_start = Some(timestamp_start);
-        self
-    }
-
-    pub fn with_timestamp_end(mut self, timestamp_end: u64) -> Self {
-        self.timestamp_end = Some(timestamp_end);
-        self
-    }
-
-    pub fn with_timestamp_range(mut self, timestamp_start: u64, timestamp_end: u64) -> Self {
-        self.timestamp_start = Some(timestamp_start);
-        self.timestamp_end = Some(timestamp_end);
-        self
-    }
-
-    pub fn with_limit(mut self, limit: u64) -> Self {
-        self.limit = Some(limit);
-        self
-    }
-
-    pub fn with_offset(mut self, offset: u64) -> Self {
-        self.offset = Some(offset);
-        self
-    }
-}
-
 //////////////////////// Matchmaker Event Types ////////////////////////
 
-/// API wrapper for events received by the SSE stream
+/// Pending transaction from the matchmaker stream
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct MatchMakerEvent {
-    ///  Transaction or Bundle hash
+pub struct PendingTransaction {
+    /// Transaction or Bundle hash.
     pub hash: TxHash,
-    /// Event logs emitted by executing the transaction
-    pub log: Vec<EventTransactionLog>,
-    /// Logs emitted by the transaction or bundle
-    pub transactions: Vec<EventTransaction>,
-}
-
-/// Transaction from the event
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct EventTransaction {
+    /// Logs emitted by the transaction or bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logs: Option<Vec<EventTransactionLog>>,
     /// Transaction recipient address.
-    pub to: Address,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<Address>,
     /// 4-byte-function selector
-    #[serde(rename = "functionSelector")]
-    pub function_selector: FunctionSelector,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_selector: Option<FunctionSelector>,
     /// Calldata of the transaction
-    #[serde(rename = "callData")]
-    pub calldata: Bytes,
-}
-
-/// A log produced by a transaction.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct EventTransactionLog {
-    /// The address of the contract that emitted the log
-    pub address: Address,
-    /// Topics of the log
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calldata: Option<Bytes>,
+    /// Change in coinbase value after inserting tx/bundle, divided by gas used
     ///
-    /// (In solidity: The first topic is the hash of the signature of the event
-    /// (e.g. `Deposit(address,bytes32,uint256)`), except you declared the event
-    /// with the anonymous specifier.)
-    pub topics: Vec<H256>,
+    /// Can be used to determine the minimum payment to the builder to make your backrun look more
+    /// profitable to builders. Please note that this only applies to builders like Flashbots who
+    /// order bundles by MEV gas price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mev_gas_price: Option<U256>,
+    /// Gas used by the tx/bundle, rounded up to 2 most significant digits
+    ///
+    /// Only implemented on Goerli
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas_used: Option<U256>,
 }
 
-/// 4-byte-function selector
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct FunctionSelector(pub [u8; 4]);
-impl FunctionSelector {
-    fn hex_encode(&self) -> String {
-        hex::encode(self.0.as_ref())
-    }
-}
-
-impl Serialize for FunctionSelector {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.to_string().as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for FunctionSelector {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let hex_str = String::deserialize(deserializer)?;
-        let s = hex_str.strip_prefix("0x").unwrap_or(&hex_str);
-        if s.len() != 8 {
-            return Err(serde::de::Error::custom(format!(
-                "Expected 4 byte function selector: {}",
-                hex_str
-            )));
-        }
-
-        let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
-        let selector =
-            FunctionSelector::try_from(bytes.as_slice()).map_err(serde::de::Error::custom)?;
-        Ok(selector)
-    }
-}
-
-impl AsRef<[u8]> for FunctionSelector {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl std::fmt::Debug for FunctionSelector {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("FunctionSelector")
-            .field(&self.hex_encode())
-            .finish()
-    }
-}
-
-impl std::fmt::Display for FunctionSelector {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "0x{}", self.hex_encode())
-    }
-}
-
-impl LowerHex for FunctionSelector {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "0x{}", self.hex_encode())
-    }
-}
-
-impl Deref for FunctionSelector {
-    type Target = [u8];
-
-    #[inline]
-    fn deref(&self) -> &[u8] {
-        self.as_ref()
-    }
-}
-
-impl From<[u8; 4]> for FunctionSelector {
-    fn from(src: [u8; 4]) -> Self {
-        Self(src)
-    }
-}
-
-impl<'a> TryFrom<&'a [u8]> for FunctionSelector {
-    type Error = TryFromSliceError;
-
-    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let sel: [u8; 4] = value.try_into()?;
-        Ok(Self(sel))
-    }
-}
-impl PartialEq<[u8; 4]> for FunctionSelector {
-    fn eq(&self, other: &[u8; 4]) -> bool {
-        other == &self.0
-    }
-}
-
-/// Deserializes missing or null sequences as empty vectors.
-mod null_sequence {
-    use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
-
-    pub(crate) fn deserialize<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-    where
-        D: Deserializer<'de>,
-        T: DeserializeOwned,
-    {
-        let s = Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default();
-        Ok(s)
-    }
-
-    pub(crate) fn serialize<T, S>(val: &Vec<T>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        T: Serialize,
-        S: Serializer,
-    {
-        if val.is_empty() {
-            serializer.serialize_none()
-        } else {
-            val.serialize(serializer)
+impl PendingTransaction {
+    pub fn new(
+        hash: TxHash,
+        logs: Option<Vec<EventTransactionLog>>,
+        to: Option<Address>,
+        function_selector: Option<FunctionSelector>,
+        calldata: Option<Bytes>,
+        mev_gas_price: Option<U256>,
+        gas_used: Option<U256>,
+    ) -> Self {
+        Self {
+            hash,
+            logs,
+            to,
+            function_selector,
+            calldata,
+            mev_gas_price,
+            gas_used,
         }
     }
+}
+
+impl From<&Event> for PendingTransaction {
+    fn from(event: &Event) -> Self {
+        let tx = event.transactions.clone().into_iter().next();
+        Self {
+            hash: event.hash,
+            logs: Some(event.logs.clone()),
+            to: tx.as_ref().map(|tx| tx.to),
+            function_selector: tx.as_ref().map(|tx| tx.function_selector.clone()),
+            calldata: tx.map(|tx| tx.calldata),
+            mev_gas_price: None,  
+            gas_used: None,       
+        }
+    }
+}
+
+
+/// Pending bundle from the matchmaker stream
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PendingBundle {
+    /// Transaction or Bundle hash.
+    pub hash: TxHash,
+    /// Logs emitted by the transaction or bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logs: Option<Vec<EventTransactionLog>>,
+    /// Transaction details.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transactions: Option<Vec<EventTransaction>>,
+    /// Change in coinbase value after inserting tx/bundle, divided by gas used
+    ///
+    /// Can be used to determine the minimum payment to the builder to make your backrun look more
+    /// profitable to builders. Please note that this only applies to builders like Flashbots who
+    /// order bundles by MEV gas price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mev_gas_price: Option<U256>,
+    /// Gas used by the tx/bundle, rounded up to 2 most significant digits
+    ///
+    /// Only implemented on Goerli
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gas_used: Option<U256>,
+}
+
+impl PendingBundle {
+    pub fn new(
+        hash: TxHash,
+        logs: Option<Vec<EventTransactionLog>>,
+        transactions: Option<Vec<EventTransaction>>,
+        mev_gas_price: Option<U256>,
+        gas_used: Option<U256>,
+    ) -> Self {
+        Self {
+            hash,
+            logs,
+            transactions,
+            mev_gas_price,
+            gas_used,
+        }
+    }
+}
+
+impl From<&Event> for PendingBundle {
+    fn from(event: &Event) -> Self {
+        Self {
+            hash: event.hash,
+            logs: Some(event.logs.clone()),
+            transactions: Some(event.transactions.clone()),
+            mev_gas_price: None,  
+            gas_used: None,       
+        }
+    }
+}
+
+/// Pending transaction or bundle from the matchmaker stream
+pub enum PendingTxOrBundle {
+    Tx(PendingTransaction),
+    Bundle(PendingBundle),
 }

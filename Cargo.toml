@@ -16,5 +16,6 @@ futures-util = "0.3.28"
 http = "0.2.9"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 log = "0.4.19"
+parking_lot = "0.12.1"
 
 

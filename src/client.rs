@@ -1,87 +1,165 @@
-use mev_share_rs::{
-	EventClient,
-	sse::{Event, EventStream},
-};
-use jsonrpsee::http_client;
 use crate::signer_middleware::{FlashbotsSigner, FlashbotsSignerLayer};
-use log::info;
-use tower::ServiceBuilder;
-use std::sync::Arc;
+use crate::types::{PendingBundle, PendingTxOrBundle, MatchMakerNetwork, StreamingEventTypes, SupportedNetworks, PendingTransaction};
 use ethers::{
-	types::{Chain, H256},
-	signers::Signer
+    signers::Signer,
+    types::{Chain, H256},
 };
-use tracing_subscriber::{
-	EnvFilter,
-	fmt, 
-	prelude::*,
+use futures_util::StreamExt;
+use jsonrpsee::http_client;
+use log::{error, info};
+use parking_lot::Mutex;
+use mev_share_rs::{
+    sse::{Event, EventStream},
+    EventClient,
 };
-use crate::types::{
-	SupportedNetworks,
-	MatchMakerNetwork
-};
+use std::sync::Arc;
+use tower::ServiceBuilder;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-type FlashbotsSignerClient<S> = http_client::HttpClient<FlashbotsSigner<S, http_client::transport::HttpBackend>>;
+type FlashbotsSignerClient<S> =
+    http_client::HttpClient<FlashbotsSigner<S, http_client::transport::HttpBackend>>;
 
 pub struct MatchmakerClient<'a, S> {
-	signer_client: FlashbotsSignerClient<S>,
-	network: MatchMakerNetwork<'a>,
-	event_client: EventStream<Event>
+    signer_client: FlashbotsSignerClient<S>,
+    network: MatchMakerNetwork<'a>,
+    event_client: EventClient,
 }
 
-impl<'a, S> MatchmakerClient<'a, S> 
-where S: Signer + Clone + Send + Sync + 'static
+impl<'a, S> MatchmakerClient<'a, S>
+where
+    S: Signer + Clone + 'static,
 {
-	async fn new(self, auth_signer: S, network: MatchMakerNetwork<'a>, event_client: EventClient) -> MatchmakerClient<'a, S> {
+    fn new(
+        self,
+        auth_signer: S,
+        network: MatchMakerNetwork<'a>,
+        event_client: EventClient,
+    ) -> MatchmakerClient<'a, S> {
+        let signing_middleware = FlashbotsSignerLayer::new(Arc::new(auth_signer));
 
-		let signing_middleware = FlashbotsSignerLayer::new(Arc::new(auth_signer));
+        let service_builder = ServiceBuilder::new().layer(signing_middleware);
 
-		let service_builder = ServiceBuilder::new().layer(signing_middleware);
+        let http_client = http_client::HttpClientBuilder::default()
+            .set_middleware(service_builder)
+            .build(network.api_url.clone())
+            .unwrap();
 
-		let http_client = http_client::HttpClientBuilder::default()
-			.set_middleware(service_builder)
-			.build(network.api_url.clone())
-			.unwrap();
+        Self {
+            signer_client: http_client,
+            network,
+            event_client,
+        }
+    }
 
-		tracing_subscriber::registry().with(fmt::layer()).with(EnvFilter::from_default_env()).init();
+    /// Connect to Flashbots Mainnet Matchmaker
+    pub fn use_ethereum_mainnet(mut self, auth_signer: S) -> MatchmakerClient<'a, S> {
+        let supported_networks = SupportedNetworks::new();
+        self.network = supported_networks
+            .get_network(Chain::Mainnet as u64)
+            .unwrap();
+        let event_client = EventClient::default();
+        let network = self.network.clone();
+        self.new(auth_signer, network, event_client)
+    }
 
-		let event_client = event_client.events(self.network.api_url.clone()).await.unwrap();
-		info!("Connected to Flashbots Matchmaker at {}", self.network.api_url);
+    /// Connect to Flashbots Goerli Matchmaker
+    pub fn use_ethereum_goerli(mut self, auth_signer: S) -> MatchmakerClient<'a, S> {
+        let supported_networks = SupportedNetworks::new();
+        self.network = supported_networks
+            .get_network(Chain::Goerli as u64)
+            .unwrap();
+        let event_client = EventClient::default();
+        let network = self.network.clone();
+        self.new(auth_signer, network, event_client)
+    }
 
-		Self {
-			signer_client: http_client,
-			network,
-			event_client
-		}
+    /// Connect to supported networks by specifying a network with a `chain_id`
+    pub async fn from_network(mut self, auth_signer: S, chain_id: u64) -> MatchmakerClient<'a, S> {
+        let supported_networks = SupportedNetworks::new();
+        if !supported_networks.is_supported(chain_id) {
+            panic!("Chain ID {} is not supported", chain_id);
+        }
+        self.network = supported_networks.get_network(chain_id).unwrap();
+        let event_client = EventClient::default();
+        let network = self.network.clone();
+        self.new(auth_signer, network, event_client)
+    }
+
+	/// Registers the provided callback to be called when a new MEV-Share transaction is received.
+	///
+	/// * `event` - The event received from the event stream.
+	/// * `callback` - Async function to process pending tx.
+	fn on_transaction<F>(&self, event: &Event, callback: F)
+	where
+		F: FnOnce(PendingTxOrBundle) -> (),
+	{
+		let tx = PendingTransaction::from(event);
+		callback(PendingTxOrBundle::Tx(tx));
 	}
 
-	/// Connect to Flashbots Mainnet Matchmaker
-	pub async fn use_ethereum_mainnet(mut self, auth_signer: S) -> MatchmakerClient<'a, S> {
-		let supported_networks = SupportedNetworks::new();
-		self.network = supported_networks.get_network(Chain::Mainnet as u64).unwrap();
-		let event_client = EventClient::default();
-		let network = self.network.clone();
-		self.new(auth_signer, network, event_client).await
+	/// Registers the provided callback to be called when a new MEV-Share bundle is received.
+	///
+	/// * `event` - The event received from the event stream.
+	/// * `callback` - Async function to process pending tx.
+	fn on_bundle<F>(&self, event: &Event, callback: F)
+	where
+		F: FnOnce(PendingTxOrBundle) -> (),
+	{
+		let bundle = PendingBundle::from(event);
+		callback(PendingTxOrBundle::Bundle(bundle));
 	}
 
-	/// Connect to Flashbots Goerli Matchmaker
-	pub async fn use_ethereum_goerli(mut self, auth_signer: S) -> MatchmakerClient<'a, S> {
-		let supported_networks = SupportedNetworks::new();
-		self.network = supported_networks.get_network(Chain::Goerli as u64).unwrap();
-		let event_client = EventClient::default();
-		let network = self.network.clone();
-		self.new(auth_signer, network, event_client).await
-	}
+    /// Starts listening to the Matchmaker event stream and registers the given callback to be invoked when the given event type is received
+    pub async fn on<F>(
+        &self,
+        event: StreamingEventTypes,
+        callback: Option<F>,
+    ) 
+    where
+	F: FnMut(PendingTxOrBundle) -> () + Send + Clone + Sync + 'static
+    {
 
-	/// Connect to Flashbots Matchmaker given a chain id
-	pub async fn from_network(mut self, auth_signer: S, chain_id: u64) -> MatchmakerClient<'a, S> {
-		let supported_networks = SupportedNetworks::new();
-		if !supported_networks.is_supported(chain_id) {
-			panic!("Chain ID {} is not supported", chain_id);
-		}
-		self.network = supported_networks.get_network(chain_id).unwrap();
-		let event_client = EventClient::default();
-		let network = self.network.clone();
-		self.new(auth_signer, network, event_client).await
-	}
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(EnvFilter::from_default_env())
+            .init();
+
+        let mut stream = self
+            .event_client
+            .events(self.network.stream_url.clone())
+            .await
+            .unwrap();
+
+        info!(
+            "Connected to Flashbots Matchmaker at {}",
+            self.network.stream_url
+        );
+
+	let event_handler: Box<dyn Fn(Event) -> () + Send + Sync>;
+	match event {
+	    StreamingEventTypes::Bundle => {
+		info!("Listening for Bundle events");
+		event_handler = Box::new(|pending_event: Event| {
+			self.on_bundle(&pending_event, callback.clone().unwrap());
+		});
+	    }
+	    StreamingEventTypes::Transaction => {
+		info!("Listening for Bundle events");
+		 event_handler = Box::new(|pending_event: Event| {
+			self.on_transaction(&pending_event, callback.clone().unwrap());
+		});
+	    }
+	};
+
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(e) => {
+                    event_handler(e);
+                }
+                Err(e) => {
+                    error!("Error: {:?}", e);
+                }
+            }
+        }
+    }
 }
