@@ -1,4 +1,4 @@
-//! Types used by the Flashbot Matchmaker Client 
+//! Types used by the Flashbot Matchmaker Client
 use ethers::types::{Address, Bytes, Chain, TxHash, U256, U64};
 use mev_share_rs::sse::{Event, EventTransaction, EventTransactionLog, FunctionSelector};
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,6 @@ impl<'a> SupportedNetworks<'a> {
             .cloned()
     }
 }
-
 
 /// Configuration used to connect to the Matchmaker
 #[derive(Deserialize, Debug, Serialize, Clone, Default)]
@@ -178,6 +177,7 @@ pub struct ValidityParams {
 }
 
 /// Parameters sent to mev_sendBundle
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Bundle {
     /// Smart bundle spec version
     pub version: ProtocolVersion,
@@ -186,8 +186,10 @@ pub struct Bundle {
     /// Transactions that make up the bundle. `hash` refers to a transaction hash from the Matchmaker event stream
     pub body: Vec<BundleTx>,
     /// Conditions for bundle to be considered for inclusion in a block, evaluated _after_ the bundle is placed in the block.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub validity: Option<ValidityParams>,
     /// Bundle privacy parameters
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub privacy: Option<PrivacyParams>,
 }
 

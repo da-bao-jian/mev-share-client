@@ -1,13 +1,14 @@
-//! A Flashbots client for interacting with the Flashbots Matchmaker service 
+//! A Flashbots client for interacting with the Flashbots Matchmaker service
 //! based on https://github.com/flashbots/matchmaker-ts
 use crate::signer_middleware::{FlashbotsSigner, FlashbotsSignerLayer};
 use crate::types::{
-    MatchMakerNetwork, PendingBundle, PendingTransaction, PendingTxOrBundle, StreamingEventTypes,
-    SupportedNetworks,
+    Bundle, MatchMakerNetwork, PendingBundle, PendingTransaction, PendingTxOrBundle,
+    SendBundleResponse, StreamingEventTypes, SupportedNetworks,
 };
+use anyhow::Result;
 use ethers::{signers::Signer, types::Chain};
 use futures_util::StreamExt;
-use jsonrpsee::http_client;
+use jsonrpsee::{core::client::ClientT, http_client};
 use log::{error, info};
 use mev_share_rs::{sse::Event, EventClient};
 use parking_lot::Mutex;
@@ -148,7 +149,7 @@ where
         );
 
         let callback = Arc::new(Mutex::new(callback));
-        let event_handler: Box<dyn Fn(Event) + Send + Sync>  = match event_type {
+        let event_handler: Box<dyn Fn(Event) + Send + Sync> = match event_type {
             StreamingEventTypes::Bundle => {
                 info!("Listening for Bundle events");
                 Box::new(|pending_event: Event| {
@@ -174,5 +175,17 @@ where
                 }
             }
         }
+    }
+
+    /// Sends a bundle to mev-share
+    ///
+    /// * `bundle` - Params for the bundle to be sent
+    pub async fn send_bundle(&self, bundle: &Bundle) -> Result<SendBundleResponse> {
+        let response = self
+            .signer_client
+            .request("mev_sendBundle", [bundle])
+            .await?;
+
+        Ok(response)
     }
 }
