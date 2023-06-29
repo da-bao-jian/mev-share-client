@@ -1,24 +1,18 @@
-use ethers::types::{Address, Bytes, Chain, TxHash, H256, U256, U64};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{array::TryFromSliceError, collections::HashMap, fmt::LowerHex, ops::Deref};
-use mev_share_rs::{
-    sse::{
-        Event,
-        EventTransactionLog,
-        EventTransaction,
-        FunctionSelector
-    },
-    
-};
+//! Types used by the Flashbot Matchmaker Client 
+use ethers::types::{Address, Bytes, Chain, TxHash, U256, U64};
+use mev_share_rs::sse::{Event, EventTransaction, EventTransactionLog, FunctionSelector};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Network configuration for the supported networks
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SupportedNetworks<'a> {
     /// The supported networks
     supported_networks: HashMap<String, MatchMakerNetwork<'a>>,
 }
 
 impl<'a> SupportedNetworks<'a> {
+    /// Creates a new instance of SupportedNetworks with the predefined network configurations.
     pub fn new() -> Self {
         let mut networks = HashMap::new();
         networks.insert(
@@ -45,20 +39,24 @@ impl<'a> SupportedNetworks<'a> {
         }
     }
 
+    /// Retrieves the configuration for the Ethereum mainnet.
     pub fn mainnet(&self) -> Option<&MatchMakerNetwork> {
         self.supported_networks.get("mainnet")
     }
 
+    /// Retrieves the configuration for the Ethereum Goerli testnet.
     pub fn goerli(&self) -> Option<&MatchMakerNetwork> {
         self.supported_networks.get("goerli")
     }
 
+    /// Checks if a network with the given chain ID is supported.
     pub fn is_supported(&self, chain_id: u64) -> bool {
         self.supported_networks
             .values()
             .any(|network| network.chain_id == chain_id)
     }
 
+    /// Retrieves the network configuration for the given chain ID.
     pub fn get_network(&self, chain: u64) -> Option<MatchMakerNetwork<'a>> {
         self.supported_networks
             .values()
@@ -66,6 +64,7 @@ impl<'a> SupportedNetworks<'a> {
             .cloned()
     }
 }
+
 
 /// Configuration used to connect to the Matchmaker
 #[derive(Deserialize, Debug, Serialize, Clone, Default)]
@@ -83,11 +82,14 @@ pub struct MatchMakerNetwork<'a> {
 
 /// Used to specify which type of event to listen for
 pub enum StreamingEventTypes {
+    /// Represents a bundle event.
     Bundle,
+    /// Represents a transaction event.
     Transaction,
 }
 
 impl StreamingEventTypes {
+    /// Returns the string representation of the event type.
     pub fn as_str(&self) -> &'static str {
         match self {
             StreamingEventTypes::Bundle => "bundle",
@@ -280,6 +282,7 @@ pub struct PendingTransaction {
 }
 
 impl PendingTransaction {
+    /// Creates a new `PendingTransaction` instance.
     pub fn new(
         hash: TxHash,
         logs: Option<Vec<EventTransactionLog>>,
@@ -302,6 +305,7 @@ impl PendingTransaction {
 }
 
 impl From<&Event> for PendingTransaction {
+    /// Converts an `Event` into a `PendingTransaction`.
     fn from(event: &Event) -> Self {
         let tx = event.transactions.clone().into_iter().next();
         Self {
@@ -310,12 +314,11 @@ impl From<&Event> for PendingTransaction {
             to: tx.as_ref().map(|tx| tx.to),
             function_selector: tx.as_ref().map(|tx| tx.function_selector.clone()),
             calldata: tx.map(|tx| tx.calldata),
-            mev_gas_price: None,  
-            gas_used: None,       
+            mev_gas_price: None,
+            gas_used: None,
         }
     }
 }
-
 
 /// Pending bundle from the matchmaker stream
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -343,6 +346,7 @@ pub struct PendingBundle {
 }
 
 impl PendingBundle {
+    /// Creates a new `PendingBundle` instance.
     pub fn new(
         hash: TxHash,
         logs: Option<Vec<EventTransactionLog>>,
@@ -361,13 +365,14 @@ impl PendingBundle {
 }
 
 impl From<&Event> for PendingBundle {
+    /// Converts an `Event` into a `PendingBundle`.
     fn from(event: &Event) -> Self {
         Self {
             hash: event.hash,
             logs: Some(event.logs.clone()),
             transactions: Some(event.transactions.clone()),
-            mev_gas_price: None,  
-            gas_used: None,       
+            mev_gas_price: None,
+            gas_used: None,
         }
     }
 }
